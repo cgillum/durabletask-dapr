@@ -24,7 +24,19 @@ public record WorkflowExecutionResult(
 
 public enum WorkflowExecutionResultType
 {
+    /// <summary>
+    /// The workflow executed successfully.
+    /// </summary>
     Executed,
+
+    /// <summary>
+    /// The workflow was unable to run due to concurrency throttles.
+    /// </summary>
     Throttled,
+
+    /// <summary>
+    /// There was a problem executing the workflow and the results, if any, should be discarded.
+    /// The workflow should be retried again later.
+    /// </summary>
     Abandoned,
 }

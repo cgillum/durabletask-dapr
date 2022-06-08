@@ -13,30 +13,61 @@ static class Program
     {
         Console.WriteLine("Starting up...");
 
-        DaprOrchestrationService service = new(new DaprOptions());
-        await service.CreateIfNotExistsAsync();
-
+        // Write internal log messages to the console.
         ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
         {
-            builder.AddSimpleConsole(builder => builder.TimestampFormat = "o");
+            builder.AddSimpleConsole(options =>
+            {
+                options.SingleLine = true;
+                options.UseUtcTimestamp = true;
+                options.TimestampFormat = "yyyy-mm-ddThh:mm:ss.ffffffZ ";
+            });
+
+            // Show as many DurableTask logs as possible
+            builder.AddFilter("DurableTask", LogLevel.Debug);
+
+            // ASP.NET Core logs to warning since they can otherwise be noisy.
+            // This should be increased if it's necessary to debug interactions with Dapr.
+            builder.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
         });
 
+        DaprOrchestrationService service = new(new DaprOptions
+        {
+            LoggerFactory = loggerFactory,
+        });
+
+        // This is currently a no-op, but we do it anyways since that's the pattern
+        // DTFx apps are normally supposed to follow.
+        await service.CreateIfNotExistsAsync();
+
+
+        // Register a very simple orchestration and start the worker.
         TaskHubWorker worker = new(service, loggerFactory);
-        worker.AddTaskOrchestrations(typeof(NoOpOrchestration));
+        worker.AddTaskOrchestrations(typeof(EchoOrchestration));
         await worker.StartAsync();
 
         Console.WriteLine("Press [ENTER] to create an orchestration instance.");
         Console.ReadLine();
 
         TaskHubClient client = new(service, null, loggerFactory);
-        await client.CreateOrchestrationInstanceAsync(typeof(NoOpOrchestration), "Hello, Dapr!");
+        OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
+            typeof(EchoOrchestration),
+            input: "Hello, Dapr!");
+
+        Console.WriteLine($"Started orchestration with ID = '{instance.InstanceId}' and waiting for it to complete...");
+
+        OrchestrationState state = await client.WaitForOrchestrationAsync(instance, TimeSpan.FromMinutes(5));
+        Console.WriteLine($"Orchestration {state.OrchestrationStatus}! Raw output: {state.Output}");
 
         Console.WriteLine("Press [ENTER] to exit.");
         Console.ReadLine();
     }
 }
 
-class NoOpOrchestration : TaskOrchestration<string, string>
+/// <summary>
+/// Simple orchestration that just saves the input as the output.
+/// </summary>
+class EchoOrchestration : TaskOrchestration<string, string>
 {
     public override Task<string> RunTask(OrchestrationContext context, string input)
     {
@@ -44,6 +75,7 @@ class NoOpOrchestration : TaskOrchestration<string, string>
     }
 }
 
+// This is just for ad-hoc testing. It's not actually part of this project in any way.
 public interface IMyActor : IActor
 {
     Task DoSomethingAsync();

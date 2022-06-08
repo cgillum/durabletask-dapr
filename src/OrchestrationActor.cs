@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using System.Collections.ObjectModel;
 using Dapr.Actors.Runtime;
 using DurableTask.Core;
 using DurableTask.Core.History;
@@ -23,9 +22,9 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         this.workflowScheduler = workflowScheduler ?? throw new ArgumentNullException(nameof(workflowScheduler));
     }
 
-    public async Task InitAsync(TaskMessage creationMessage, OrchestrationStatus[] dedupeStatuses)
+    async Task IOrchestrationActor.InitAsync(TaskMessage creationMessage, OrchestrationStatus[] dedupeStatuses)
     {
-        ConditionalValue<InternalState> existing = await this.StateManager.TryGetStateAsync<InternalState>("state");
+        ConditionalValue<InternalState> existing = await this.TryGetStateAsync();
 
         // NOTE: Validation must happen before the reminder is scheduled.
         // De-dupe logic
@@ -50,7 +49,6 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         await this.CreateOrchestratorReminder(delay: TimeSpan.Zero);
 
         // Cache the state in memory so that we don't have to fetch it again when the reminder fires.
-        // TODO: This state ideally needs to be split across multiple records.
         DateTime now = DateTime.UtcNow;
         this.state = new InternalState
         {
@@ -64,7 +62,13 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
             Inbox = { creationMessage },
         };
 
+        // Persist the initial "Pending" state to the state store/
+        //
+        // RELIABILITY:
+        // If a crash occurs before the state is saved, the previously scheduled reminder should fail to find the
+        // initial workflow state and won't schedule any workflow execution. This is the correct behavior.
         await this.StateManager.SetStateAsync("state", this.state);
+        await this.StateManager.SaveStateAsync();
     }
 
     async Task IRemindable.ReceiveReminderAsync(string reminderName, byte[] state, TimeSpan dueTime, TimeSpan period)
@@ -90,6 +94,21 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         switch (result.Type)
         {
             case WorkflowExecutionResultType.Executed:
+                // Persist the changes to the data store
+                DateTime utcNow = DateTime.UtcNow;
+                this.state.OrchestrationStatus = result.UpdatedState.OrchestrationStatus;
+                this.state.LastUpdatedTimeUtc = utcNow;
+                this.state.Output = result.UpdatedState.Output;
+
+                if (result.UpdatedState.OrchestrationStatus == OrchestrationStatus.Completed ||
+                    result.UpdatedState.OrchestrationStatus == OrchestrationStatus.Failed ||
+                    result.UpdatedState.OrchestrationStatus == OrchestrationStatus.Terminated)
+                {
+                    this.state.CompletedTimeUtc = utcNow;
+                }
+
+                await this.StateManager.SaveStateAsync();
+
                 // TODO: Process the items in the outbox
                 break;
             case WorkflowExecutionResultType.Throttled:
@@ -102,14 +121,51 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         }
     }
 
-    Task UpdateWorkflowStateAsync(WorkflowExecutionResult result)
+    async Task<OrchestrationState?> IOrchestrationActor.GetCurrentStateAsync()
     {
-        this.state!.OrchestrationStatus = result.UpdatedState.OrchestrationStatus;
-        this.state!.LastUpdatedTimeUtc = DateTime.UtcNow;
-        this.state!.Output = result.UpdatedState.Output;
+        ConditionalValue<InternalState> existing = await this.TryGetStateAsync();
+        if (existing.HasValue)
+        {
+            InternalState internalState = existing.Value;
+            return new OrchestrationState
+            {
+                CompletedTime = internalState.CompletedTimeUtc.GetValueOrDefault(),
+                CreatedTime = internalState.CreatedTimeUtc,
+                FailureDetails = null /* TODO */,
+                Input = internalState.Input,
+                LastUpdatedTime = internalState.LastUpdatedTimeUtc,
+                Name = internalState.Name,
+                OrchestrationInstance = new OrchestrationInstance
+                {
+                    InstanceId = internalState.InstanceId,
+                    ExecutionId = internalState.ExecutionId,
+                },
+                OrchestrationStatus = internalState.OrchestrationStatus,
+                Output = internalState.Output,
+                ParentInstance = null /* TODO */,
+                Status = internalState.CustomStatus,
+            };
+        }
 
-        // REVIEW: What does this method do? Does it implicitly know what state to update?
-        return this.StateManager.SaveStateAsync();
+        return null;
+    }
+
+    async Task<ConditionalValue<InternalState>> TryGetStateAsync()
+    {
+        // Cache hit?
+        if (this.state != null)
+        {
+            return new ConditionalValue<InternalState>(true, this.state);
+        }
+
+        // Cache miss
+        ConditionalValue<InternalState> result = await this.StateManager.TryGetStateAsync<InternalState>("state");
+        if (result.HasValue)
+        {
+            this.state = result.Value;
+        }
+
+        return result;
     }
 
     Task CreateOrchestratorReminder(TimeSpan delay)
@@ -130,6 +186,7 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         public string ExecutionId { get; init; } = "";
         public string? Input { get; init; }
         public string? Output { get; set; }
+        public string? CustomStatus { get; set; }
         public DateTime CreatedTimeUtc { get; init; }
         public DateTime LastUpdatedTimeUtc { get; set; }
         public DateTime? CompletedTimeUtc { get; set; }

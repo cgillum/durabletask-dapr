@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System.Diagnostics;
 using System.Threading.Channels;
 using Dapr.Actors;
 using Dapr.Actors.Client;
@@ -9,26 +10,61 @@ using DurableTask.Core.History;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace DurableTask.Dapr;
 
+/// <summary>
+/// The primary integration point for the Durable Task Framework and Dapr actors.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Durable Task Framework apps can use Dapr actors as the underlying storage provider and scheduler by creating
+/// instances of this class and passing them in as the constructor arguments for the <see cref="TaskHubClient"/> and
+/// <see cref="TaskHubWorker"/> objects. The client and worker will then call into class via the 
+/// <see cref="IOrchestrationServiceClient"/> and <see cref="IOrchestrationService"/> interfaces, respectively.
+/// </para><para>
+/// In this orchestration service, each created orchestration instance maps a Dapr actor instance (it may map to more
+/// than one actor in a future iteration). The actor stores the orchestration history and metadata in its own internal
+/// state. Operations invoked on the actor will either query the orchestration state or trigger the orchestration to
+/// be executed in the current process.
+/// </para>
+/// </remarks>
 public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowScheduler
 {
+    /// <summary>
+    /// Dapr-specific configuration options for this orchestration service.
+    /// </summary>
     readonly DaprOptions options;
+
+    /// <summary>
+    /// Channel used to asynchronously invoke the orchestration when certain actor messages are received.
+    /// </summary>
     readonly Channel<TaskOrchestrationWorkItem> orchestrationWorkItemChannel;
+
+    /// <summary>
+    /// The web host that routes HTTP requests to specific actor instances.
+    /// </summary>
     readonly IHost daprActorHost;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="DaprOrchestrationService"/> class with the specified configuration
+    /// options.
+    /// </summary>
+    /// <param name="options">Configuration options for Dapr integration.</param>
     public DaprOrchestrationService(DaprOptions options)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
 
         this.orchestrationWorkItemChannel = Channel.CreateUnbounded<TaskOrchestrationWorkItem>();
-        this.daprActorHost = this.CreateActorHost();
-    }
 
-    IHost CreateActorHost()
-    {
+        // The actor host is an HTTP service that routes incoming requests to actor instances.
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
+        if (options.LoggerFactory != null)
+        {
+            builder.Services.AddSingleton<ILoggerFactory>(options.LoggerFactory);
+        }
+
         builder.Services.AddActors(options =>
         {
             options.Actors.RegisterActor<DaprWorkflowScheduler>();
@@ -40,9 +76,10 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         WebApplication app = builder.Build();
         app.UseRouting();
         app.UseEndpoints(endpoints => endpoints.MapActorsHandlers());
-
-        return app;
+        this.daprActorHost = app;
     }
+
+
 
     #region Task Hub Management
     // Nothing to do, since we rely on the existing Dapr actor infrastructure to already be there.
@@ -55,15 +92,14 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
     public override Task DeleteAsync(bool deleteInstanceStore) => Task.CompletedTask;
     #endregion
 
-    #region Client APIs
+    #region Client APIs (called by TaskHubClient)
     public override async Task CreateTaskOrchestrationAsync(
         TaskMessage creationMessage,
         OrchestrationStatus[] dedupeStatuses)
     {
-        ActorId actorId = new(creationMessage.OrchestrationInstance.InstanceId);
-        IOrchestrationActor proxy = ActorProxy.Create<IOrchestrationActor>(actorId, nameof(DaprWorkflowScheduler));
+        IOrchestrationActor proxy = this.GetOrchestrationActorProxy(creationMessage.OrchestrationInstance.InstanceId);
 
-        // The Init method invokes the actor directly, which then decides whether to apply de-dupe logic.
+        // Depending on where the actor gets placed, this may invoke an actor on another machine.
         await proxy.InitAsync(creationMessage, dedupeStatuses);
     }
 
@@ -73,13 +109,29 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         throw new NotImplementedException();
     }
 
-    public override Task<OrchestrationState> WaitForOrchestrationAsync(
+    public override async Task<OrchestrationState> WaitForOrchestrationAsync(
         string instanceId,
         string executionId,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        Stopwatch sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
+        {
+            IOrchestrationActor proxy = this.GetOrchestrationActorProxy(instanceId);
+            OrchestrationState? state = await proxy.GetCurrentStateAsync();
+            if (state != null && (
+                state.OrchestrationStatus == OrchestrationStatus.Completed ||
+                state.OrchestrationStatus == OrchestrationStatus.Failed ||
+                state.OrchestrationStatus == OrchestrationStatus.Terminated))
+            {
+                return state;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+
+        throw new TimeoutException();
     }
 
     public override Task<OrchestrationState?> GetOrchestrationStateAsync(string instanceId, string? executionId)
@@ -92,7 +144,9 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         throw new NotImplementedException();
     }
 
-    public override Task PurgeOrchestrationHistoryAsync(DateTime thresholdDateTimeUtc, OrchestrationStateTimeRangeFilterType timeRangeFilterType)
+    public override Task PurgeOrchestrationHistoryAsync(
+        DateTime thresholdDateTimeUtc,
+        OrchestrationStateTimeRangeFilterType timeRangeFilterType)
     {
         throw new NotImplementedException();
     }
@@ -147,9 +201,11 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         return Task.CompletedTask;
     }
 
-    public override Task<TaskActivityWorkItem?> LockNextTaskActivityWorkItem(TimeSpan receiveTimeout, CancellationToken cancellationToken)
+    public override Task<TaskActivityWorkItem?> LockNextTaskActivityWorkItem(
+        TimeSpan receiveTimeout,
+        CancellationToken cancellationToken)
     {
-        // Not supported - just block indefinitely
+        // Not supported yet - just block indefinitely
         return Task.Delay(Timeout.Infinite, cancellationToken).ContinueWith(_ => default(TaskActivityWorkItem));
     }
 
@@ -170,8 +226,10 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         throw new NotImplementedException();
     }
 
+    // Called by the TaskHubWorker
     public override Task StartAsync() => this.daprActorHost.StartAsync();
 
+    // Called by the TaskHubWorker
     public override Task StopAsync() => this.daprActorHost.StopAsync();
 
     #endregion
@@ -208,6 +266,15 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
     }
 
     #endregion
+
+    IOrchestrationActor GetOrchestrationActorProxy(string instanceId, TimeSpan? timeout = null)
+    {
+        // REVIEW: Should we be caching these proxy objects?
+        return ActorProxy.Create<IOrchestrationActor>(
+            new ActorId(instanceId),
+            nameof(DaprWorkflowScheduler),
+            new ActorProxyOptions {  RequestTimeout = timeout });
+    }
 
     class WorkflowExecutionWorkItem : TaskOrchestrationWorkItem
     {
