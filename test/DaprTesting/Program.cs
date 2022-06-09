@@ -56,7 +56,7 @@ static class Program
         ////    input: "Hello, Dapr!");
         OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
             typeof(SleepOrchestration),
-            input: 10 /* seconds */);
+            input: TimeSpan.FromSeconds(10));
 
         Console.WriteLine($"Started orchestration with ID = '{instance.InstanceId}' and waiting for it to complete...");
 
@@ -82,11 +82,11 @@ class EchoOrchestration : TaskOrchestration<string, string>
 /// <summary>
 /// Simple orchestration that sleeps for a given number of seconds.
 /// </summary>
-class SleepOrchestration : TaskOrchestration<int, int>
+class SleepOrchestration : TaskOrchestration<TimeSpan, TimeSpan>
 {
-    public override Task<int> RunTask(OrchestrationContext context, int input)
+    public override Task<TimeSpan> RunTask(OrchestrationContext context, TimeSpan delayInput)
     {
-        return context.CreateTimer(context.CurrentUtcDateTime.AddSeconds(input), input);
+        return context.CreateTimer(context.CurrentUtcDateTime.Add(delayInput), delayInput);
     }
 }
 
