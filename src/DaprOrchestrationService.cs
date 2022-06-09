@@ -191,12 +191,13 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         WorkflowExecutionWorkItem workflowWorkItem = (WorkflowExecutionWorkItem)workItem;
 
         // Call back into the actor via a TaskCompletionSource to save the state
+        // TODO: orchestratorMessages and continuedAsNewMessage
         workflowWorkItem.TaskCompletionSource.SetResult(new WorkflowExecutionResult(
-            WorkflowExecutionResultType.Executed,
-            orchestrationState,
-            orchestratorMessages.Union(timerMessages).Append(continuedAsNewMessage).ToList(),
-            outboundMessages,
-            newOrchestrationRuntimeState.NewEvents));
+            Type: WorkflowExecutionResultType.Executed,
+            UpdatedState: orchestrationState,
+            Timers: timerMessages,
+            Outbox: outboundMessages,
+            NewHistoryEvents: newOrchestrationRuntimeState.NewEvents));
 
         return Task.CompletedTask;
     }
@@ -273,7 +274,7 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         return ActorProxy.Create<IOrchestrationActor>(
             new ActorId(instanceId),
             nameof(DaprWorkflowScheduler),
-            new ActorProxyOptions {  RequestTimeout = timeout });
+            new ActorProxyOptions { RequestTimeout = timeout });
     }
 
     class WorkflowExecutionWorkItem : TaskOrchestrationWorkItem

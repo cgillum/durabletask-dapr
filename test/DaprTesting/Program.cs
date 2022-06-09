@@ -23,8 +23,7 @@ static class Program
                 options.TimestampFormat = "yyyy-mm-ddThh:mm:ss.ffffffZ ";
             });
 
-            // Show as many DurableTask logs as possible
-            builder.AddFilter("DurableTask", LogLevel.Debug);
+            builder.AddFilter("DurableTask", LogLevel.Information);
 
             // ASP.NET Core logs to warning since they can otherwise be noisy.
             // This should be increased if it's necessary to debug interactions with Dapr.
@@ -40,19 +39,24 @@ static class Program
         // DTFx apps are normally supposed to follow.
         await service.CreateIfNotExistsAsync();
 
-
         // Register a very simple orchestration and start the worker.
         TaskHubWorker worker = new(service, loggerFactory);
-        worker.AddTaskOrchestrations(typeof(EchoOrchestration));
+        worker.AddTaskOrchestrations(
+            typeof(EchoOrchestration),
+            typeof(SleepOrchestration));
         await worker.StartAsync();
 
         Console.WriteLine("Press [ENTER] to create an orchestration instance.");
         Console.ReadLine();
 
         TaskHubClient client = new(service, null, loggerFactory);
+        
+        ////OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
+        ////    typeof(EchoOrchestration),
+        ////    input: "Hello, Dapr!");
         OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
-            typeof(EchoOrchestration),
-            input: "Hello, Dapr!");
+            typeof(SleepOrchestration),
+            input: 10 /* seconds */);
 
         Console.WriteLine($"Started orchestration with ID = '{instance.InstanceId}' and waiting for it to complete...");
 
@@ -72,6 +76,17 @@ class EchoOrchestration : TaskOrchestration<string, string>
     public override Task<string> RunTask(OrchestrationContext context, string input)
     {
         return Task.FromResult(input);
+    }
+}
+
+/// <summary>
+/// Simple orchestration that sleeps for a given number of seconds.
+/// </summary>
+class SleepOrchestration : TaskOrchestration<int, int>
+{
+    public override Task<int> RunTask(OrchestrationContext context, int input)
+    {
+        return context.CreateTimer(context.CurrentUtcDateTime.AddSeconds(input), input);
     }
 }
 

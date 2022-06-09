@@ -18,7 +18,7 @@ public interface IWorkflowScheduler
 public record WorkflowExecutionResult(
     WorkflowExecutionResultType Type,
     OrchestrationState UpdatedState,
-    IList<TaskMessage> Inbox,
+    IList<TaskMessage> Timers,
     IList<TaskMessage> Outbox,
     IList<HistoryEvent> NewHistoryEvents);
 
