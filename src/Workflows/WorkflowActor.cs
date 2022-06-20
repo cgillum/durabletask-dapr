@@ -3,29 +3,29 @@
 
 using System.Collections.ObjectModel;
 using System.Runtime.Serialization;
+using Dapr.Actors;
+using Dapr.Actors.Client;
 using Dapr.Actors.Runtime;
 using DurableTask.Core;
 using DurableTask.Core.History;
+using DurableTask.Dapr.Activities;
 using Microsoft.Extensions.Logging;
 
-namespace DurableTask.Dapr;
+namespace DurableTask.Dapr.Workflows;
 
-// NOTE: This code runs on the container where the app code lives
-class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
+class WorkflowActor : ReliableActor, IWorkflowActor
 {
-    readonly IWorkflowScheduler workflowScheduler;
-    readonly ILogger log;
+    readonly IWorkflowExecutor workflowScheduler;
 
     WorkflowState? state;
 
-    public DaprWorkflowScheduler(ActorHost host, IWorkflowScheduler workflowScheduler, ILoggerFactory loggerFactory)
-        : base(host)
+    public WorkflowActor(ActorHost host, ILoggerFactory loggerFactory, IWorkflowExecutor workflowScheduler)
+        : base(host, loggerFactory)
     {
         this.workflowScheduler = workflowScheduler ?? throw new ArgumentNullException(nameof(workflowScheduler));
-        this.log = loggerFactory.CreateLoggerForDaprProvider();
     }
 
-    async Task IOrchestrationActor.InitAsync(TaskMessage creationMessage, OrchestrationStatus[] dedupeStatuses)
+    async Task IWorkflowActor.InitAsync(TaskMessage creationMessage, OrchestrationStatus[] dedupeStatuses)
     {
         ConditionalValue<WorkflowState> existing = await this.TryLoadStateAsync();
 
@@ -49,7 +49,7 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         // RELIABILITY:
         // This reminder must be scheduled before the state update to ensure that an unexpected process failure
         // doesn't result in orphaned state in the state store.
-        await this.CreateOrchestratorReminder("init", delay: TimeSpan.Zero);
+        await this.CreateReliableReminder("init", state: null, delay: TimeSpan.Zero);
 
         // Cache the state in memory so that we don't have to fetch it again when the reminder fires.
         DateTime now = DateTime.UtcNow;
@@ -74,20 +74,14 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         await this.StateManager.SaveStateAsync();
     }
 
-    async Task IRemindable.ReceiveReminderAsync(
-        string reminderName,
-        byte[] reminderState,
-        TimeSpan dueTime,
-        TimeSpan period)
+    protected override async Task OnReminderReceivedAsync(string reminderName, byte[] state)
     {
-        this.log.ReminderFired(this.Id.ToString(), reminderName);
-
         await this.TryLoadStateAsync();
         if (this.state == null)
         {
             // The actor may have failed to save its state after being created. The client should have already received
             // an error message associated with the failure, so we can safely drop this reminder.
-            this.log.WorkflowStateNotFound(this.Id.ToString(), reminderName);
+            this.Log.WorkflowStateNotFound(this.Id, reminderName);
             return;
         }
 
@@ -99,25 +93,27 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
             }
             else
             {
-                this.log.TimerNotFound(this.state.InstanceId, reminderName);
+                this.Log.TimerNotFound(this.state.InstanceId, reminderName);
             }
         }
 
         if (!this.state.Inbox.Any())
         {
             // Nothing to do! This isn't expected.
-            this.log.InboxIsEmpty(this.state.InstanceId, reminderName);
+            this.Log.InboxIsEmpty(this.state.InstanceId, reminderName);
             return;
         }
 
-        WorkflowExecutionResult result = await this.workflowScheduler.ExecuteWorkflowAsync(
+        this.state.SequenceNumber++;
+
+        WorkflowExecutionResult result = await this.workflowScheduler.ExecuteWorkflowStepAsync(
             this.state.InstanceId,
             this.state.Inbox,
             this.state.History);
 
         switch (result.Type)
         {
-            case WorkflowExecutionResultType.Executed:
+            case ExecutionResultType.Executed:
                 // Persist the changes to the data store
                 DateTime utcNow = DateTime.UtcNow;
                 this.state.OrchestrationStatus = result.UpdatedState.OrchestrationStatus;
@@ -142,16 +138,51 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
                         }
 
                         TimeSpan reminderDelay = timer.FireAt.Subtract(utcNow).PositiveOrZero();
-                        return this.CreateOrchestratorReminder(GetReminderNameForTimer(timer), reminderDelay);
+                        return this.CreateReliableReminder(GetReminderNameForTimer(timer), delay: reminderDelay);
                     });
 
-                    // TODO: Process outbox messages
+                    // Process outbox messages
+                    IReadOnlyList<ActivityInvocationRequest> activityRequests = result.Outbox
+                        .Where(msg => msg.Event.EventType == EventType.TaskScheduled)
+                        .Select(msg =>
+                        {
+                            TaskScheduledEvent taskEvent = (TaskScheduledEvent)msg.Event;
+                            return new ActivityInvocationRequest(
+                                taskEvent.Name!,
+                                taskEvent.EventId,
+                                taskEvent.Input,
+                                msg.OrchestrationInstance.InstanceId,
+                                msg.OrchestrationInstance.ExecutionId);
+                        })
+                        .ToList();
+
+                    if (activityRequests.Count > 0)
+                    {
+                        this.Log.SchedulingActivityTasks(
+                            this.state.InstanceId,
+                            activityRequests.Count,
+                            string.Join(", ", activityRequests));
+
+                        // Each activity invocation gets triggered in parallel by its own stateless actor.
+                        // The task ID of the activity is used to uniquely identify the activity for this
+                        // particular workflow instance.
+                        await activityRequests.ParallelForEachAsync(request =>
+                        {
+                            IActivityActor activityInvokerProxy = ActorProxy.Create<IActivityActor>(
+                                new ActorId($"{this.state.InstanceId}:activity:{request.TaskId}"),
+                                nameof(StatelessActivityActor),
+                                new ActorProxyOptions());
+                            return activityInvokerProxy.InvokeAsync(request);
+                        });
+                    }
                 }
 
                 // At this point, the inbox should be fully processed.
                 this.state.Inbox.Clear();
 
                 // Append the new history
+                // TODO: Move each history event into its own key for better scalability and reduced I/O (esp. writes).
+                //       Alternatively, key by sequence number to reduce the number of roundtrips when loading state.
                 this.state.History.AddRange(result.NewHistoryEvents);
 
                 // RELIABILITY:
@@ -159,20 +190,23 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
                 // If there is a crash, there should be a reminder that wakes us up and causes us to reprocess the
                 // latest orchestration state.
                 // TODO: Need to implement this persistent reminder...
+                await this.StateManager.SetStateAsync("state", this.state);
                 await this.StateManager.SaveStateAsync();
 
                 break;
-            case WorkflowExecutionResultType.Throttled:
+            case ExecutionResultType.Throttled:
                 // TODO: Exponential backoff with some randomness to avoid thundering herd problem.
-                await this.CreateOrchestratorReminder("retry", delay: TimeSpan.FromSeconds(30));
+                await this.CreateReliableReminder("retry", delay: TimeSpan.FromSeconds(30));
                 break;
-            case WorkflowExecutionResultType.Abandoned:
-                await this.CreateOrchestratorReminder("retry", delay: TimeSpan.FromSeconds(5));
+            case ExecutionResultType.Abandoned:
+                await this.CreateReliableReminder("retry", delay: TimeSpan.FromSeconds(5));
                 break;
         }
+
+        await this.UnregisterReminderAsync(reminderName);
     }
 
-    async Task<OrchestrationState?> IOrchestrationActor.GetCurrentStateAsync()
+    async Task<OrchestrationState?> IWorkflowActor.GetCurrentStateAsync()
     {
         ConditionalValue<WorkflowState> existing = await this.TryLoadStateAsync();
         if (existing.HasValue)
@@ -210,7 +244,7 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         }
 
         // Cache miss
-        this.log.FetchingWorkflowState(this.Id.ToString());
+        this.Log.FetchingWorkflowState(this.Id);
         ConditionalValue<WorkflowState> result = await this.StateManager.TryGetStateAsync<WorkflowState>("state");
         if (result.HasValue)
         {
@@ -218,15 +252,6 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         }
 
         return result;
-    }
-
-    Task CreateOrchestratorReminder(string reminderName, TimeSpan delay)
-    {
-        // Non-repeating reminder
-        TimeSpan periodForNoRecurrence = TimeSpan.FromMilliseconds(-1);
-
-        this.log.CreatingReminder(this.Id.ToString(), reminderName, delay, periodForNoRecurrence);
-        return this.RegisterReminderAsync(reminderName, null, delay, periodForNoRecurrence);
     }
 
     static string GetReminderNameForTimer(TimerFiredEvent e)
@@ -239,6 +264,37 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
     static bool IsReminderForDurableTimer(string reminderName)
     {
         return reminderName.StartsWith("timer-");
+    }
+
+    // This is the callback from the activity worker actor when an activity execution completes
+    async Task IWorkflowActor.CompleteActivityAsync(ActivityCompletionResponse completionInfo)
+    {
+        await this.TryLoadStateAsync();
+        if (this.state == null)
+        {
+            // The actor may have failed to save its state after being created. The client should have already received
+            // an error message associated with the failure, so we can safely drop this reminder.
+            this.Log.WorkflowStateNotFound(this.Id, "activity-callback");
+            return;
+        }
+
+        HistoryEvent historyEvent;
+        if (completionInfo.FailureDetails == null)
+        {
+            historyEvent = new TaskCompletedEvent(-1, completionInfo.TaskId, completionInfo.SerializedResult);
+        }
+        else
+        {
+            historyEvent = new TaskFailedEvent(-1, completionInfo.TaskId, null, null, completionInfo.FailureDetails);
+        }
+
+        // TODO: De-dupe any task completion events that we've already seen
+
+        this.state.Inbox.Add(this.state.NewMessage(historyEvent));
+        await this.SaveStateAsync();
+
+        // This reminder will trigger the main workflow loop
+        await this.CreateReliableReminder("task-completed");
     }
 
     /// <summary>
@@ -275,6 +331,7 @@ class DaprWorkflowScheduler : Actor, IOrchestrationActor, IRemindable
         public List<TaskMessage> Inbox { get; } = new List<TaskMessage>();
         public TimerCollection Timers { get; } = new();
         public List<HistoryEvent> History { get; } = new List<HistoryEvent>();
+        public int SequenceNumber { get; set; }
 
         internal TaskMessage NewMessage(HistoryEvent e)
         {

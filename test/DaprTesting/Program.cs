@@ -20,7 +20,7 @@ static class Program
             {
                 options.SingleLine = true;
                 options.UseUtcTimestamp = true;
-                options.TimestampFormat = "yyyy-mm-ddThh:mm:ss.ffffffZ ";
+                options.TimestampFormat = "yyyy-MM-ddThh:mm:ss.ffffffZ ";
             });
 
             builder.AddFilter("DurableTask", LogLevel.Information);
@@ -40,23 +40,39 @@ static class Program
         await service.CreateIfNotExistsAsync();
 
         // Register a very simple orchestration and start the worker.
-        TaskHubWorker worker = new(service, loggerFactory);
+        TaskHubWorker worker = new(service, loggerFactory)
+        {
+            // This setting is required for failures to work correctly
+            ErrorPropagationMode = ErrorPropagationMode.UseFailureDetails,
+        };
+
         worker.AddTaskOrchestrations(
             typeof(EchoOrchestration),
-            typeof(SleepOrchestration));
+            typeof(SleepOrchestration),
+            typeof(HelloCitiesOrchestration));
+
+        worker.AddTaskActivities(
+            typeof(SayHello));
+
         await worker.StartAsync();
+
+        // Need to give time for the actor runtime to finish initializing before we can safely communicate with them.
+        Thread.Sleep(TimeSpan.FromSeconds(5));
 
         Console.WriteLine("Press [ENTER] to create an orchestration instance.");
         Console.ReadLine();
 
         TaskHubClient client = new(service, null, loggerFactory);
-        
+
         ////OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
         ////    typeof(EchoOrchestration),
         ////    input: "Hello, Dapr!");
+        ////OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
+        ////    typeof(SleepOrchestration),
+        ////    input: TimeSpan.FromSeconds(10));
         OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
-            typeof(SleepOrchestration),
-            input: TimeSpan.FromSeconds(10));
+            typeof(HelloCitiesOrchestration),
+            input: null);
 
         Console.WriteLine($"Started orchestration with ID = '{instance.InstanceId}' and waiting for it to complete...");
 
@@ -87,6 +103,26 @@ class SleepOrchestration : TaskOrchestration<TimeSpan, TimeSpan>
     public override Task<TimeSpan> RunTask(OrchestrationContext context, TimeSpan delayInput)
     {
         return context.CreateTimer(context.CurrentUtcDateTime.Add(delayInput), delayInput);
+    }
+}
+
+class HelloCitiesOrchestration : TaskOrchestration<string, string>
+{
+    public override async Task<string> RunTask(OrchestrationContext context, string input)
+    {
+        string result = "";
+        result += await context.ScheduleTask<string>(typeof(SayHello), "Tokyo") + " ";
+        result += await context.ScheduleTask<string>(typeof(SayHello), "London") + " ";
+        result += await context.ScheduleTask<string>(typeof(SayHello), "Seattle");
+        return result;
+    }
+}
+
+class SayHello : TaskActivity<string, string>
+{
+    protected override string Execute(TaskContext context, string input)
+    {
+        return $"Hello, {input}!";
     }
 }
 
