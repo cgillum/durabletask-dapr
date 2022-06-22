@@ -119,6 +119,7 @@ class WorkflowActor : ReliableActor, IWorkflowActor
                 this.state.OrchestrationStatus = result.UpdatedState.OrchestrationStatus;
                 this.state.LastUpdatedTimeUtc = utcNow;
                 this.state.Output = result.UpdatedState.Output;
+                this.state.CustomStatus = result.UpdatedState.Status;
 
                 if (result.UpdatedState.OrchestrationStatus == OrchestrationStatus.Completed ||
                     result.UpdatedState.OrchestrationStatus == OrchestrationStatus.Failed ||
@@ -266,6 +267,28 @@ class WorkflowActor : ReliableActor, IWorkflowActor
         return reminderName.StartsWith("timer-");
     }
 
+    // This is the API used for external events, termination, etc.
+    async Task IWorkflowActor.PostToInboxAsync(TaskMessage message)
+    {
+        await this.TryLoadStateAsync();
+        if (this.state == null)
+        {
+            // TODO: If we want to support Durable Entities, we could allow well formatted external event messages
+            //       to invoke the Init flow if there isn't already state associated with the workflow.
+            this.Log.WorkflowStateNotFound(this.Id, "post-to-inbox");
+            return;
+        }
+
+        this.state.Inbox.Add(message);
+
+        // Save the state after scheduling the reminder to ensure 
+        await this.StateManager.SetStateAsync("state", this.state);
+        await this.StateManager.SaveStateAsync();
+
+        // This reminder will trigger the main workflow loop
+        await this.CreateReliableReminder("received-inbox-message");
+    }
+
     // This is the callback from the activity worker actor when an activity execution completes
     async Task IWorkflowActor.CompleteActivityAsync(ActivityCompletionResponse completionInfo)
     {
@@ -291,7 +314,8 @@ class WorkflowActor : ReliableActor, IWorkflowActor
         // TODO: De-dupe any task completion events that we've already seen
 
         this.state.Inbox.Add(this.state.NewMessage(historyEvent));
-        await this.SaveStateAsync();
+        await this.StateManager.SetStateAsync("state", this.state);
+        await this.StateManager.SaveStateAsync();
 
         // This reminder will trigger the main workflow loop
         await this.CreateReliableReminder("task-completed");

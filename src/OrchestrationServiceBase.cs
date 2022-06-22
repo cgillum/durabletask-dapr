@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using DurableTask.Core;
+using DurableTask.Core.History;
 
 namespace DurableTask.Dapr;
 
@@ -124,7 +125,16 @@ public abstract class OrchestrationServiceBase : IOrchestrationService, IOrchest
         TimeSpan timeout,
         CancellationToken cancellationToken);
 
-    public abstract Task ForceTerminateTaskOrchestrationAsync(string instanceId, string reason);
+    public virtual Task ForceTerminateTaskOrchestrationAsync(string instanceId, string reason)
+    {
+        var taskMessage = new TaskMessage
+        {
+            OrchestrationInstance = new OrchestrationInstance { InstanceId = instanceId },
+            Event = new ExecutionTerminatedEvent(-1, reason),
+        };
+
+        return this.SendTaskOrchestrationMessageAsync(taskMessage);
+    }
 
     public virtual async Task<IList<OrchestrationState>> GetOrchestrationStateAsync(string instanceId, bool allExecutions)
     {

@@ -111,10 +111,10 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
         await proxy.InitAsync(creationMessage, dedupeStatuses);
     }
 
-    public override Task SendTaskOrchestrationMessageAsync(TaskMessage message)
+    public override async Task SendTaskOrchestrationMessageAsync(TaskMessage message)
     {
-        // TODO: Invoke a specific actor API?
-        throw new NotImplementedException();
+        IWorkflowActor proxy = this.GetOrchestrationActorProxy(message.OrchestrationInstance.InstanceId);
+        await proxy.PostToInboxAsync(message);
     }
 
     public override async Task<OrchestrationState> WaitForOrchestrationAsync(
@@ -148,11 +148,6 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
         IWorkflowActor proxy = this.GetOrchestrationActorProxy(instanceId);
         OrchestrationState? state = await proxy.GetCurrentStateAsync();
         return state;
-    }
-
-    public override Task ForceTerminateTaskOrchestrationAsync(string instanceId, string reason)
-    {
-        throw new NotImplementedException();
     }
 
     public override Task PurgeOrchestrationHistoryAsync(

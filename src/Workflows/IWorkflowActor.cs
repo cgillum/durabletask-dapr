@@ -35,4 +35,11 @@ public interface IWorkflowActor : IActor
     /// </param>
     /// <returns>A task that completes when the activity completion is stored in the workflow state.</returns>
     Task CompleteActivityAsync(ActivityCompletionResponse completionInfo);
+
+    /// <summary>
+    /// Posts a message to the workflow's inbox.
+    /// </summary>
+    /// <param name="message">The message to post.</param>
+    /// <returns>A task that completes when the message is successfully persisted.</returns>
+    Task PostToInboxAsync(TaskMessage message);
 }
