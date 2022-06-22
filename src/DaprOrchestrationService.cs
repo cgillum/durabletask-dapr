@@ -7,6 +7,8 @@ using Dapr.Actors;
 using Dapr.Actors.Client;
 using DurableTask.Core;
 using DurableTask.Core.History;
+using DurableTask.Dapr.Activities;
+using DurableTask.Dapr.Workflows;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -30,7 +32,7 @@ namespace DurableTask.Dapr;
 /// be executed in the current process.
 /// </para>
 /// </remarks>
-public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowScheduler
+public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecutor, IActivityExecutor
 {
     /// <summary>
     /// Dapr-specific configuration options for this orchestration service.
@@ -40,7 +42,12 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
     /// <summary>
     /// Channel used to asynchronously invoke the orchestration when certain actor messages are received.
     /// </summary>
-    readonly Channel<TaskOrchestrationWorkItem> orchestrationWorkItemChannel;
+    readonly Channel<WorkflowExecutionWorkItem> orchestrationWorkItemChannel;
+
+    /// <summary>
+    /// Channel used to asynchronously invoke an activity when certain actor messages are received.
+    /// </summary>
+    readonly Channel<ActivityExecutionWorkItem> activityWorkItemChannel;
 
     /// <summary>
     /// The web host that routes HTTP requests to specific actor instances.
@@ -56,7 +63,8 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
 
-        this.orchestrationWorkItemChannel = Channel.CreateUnbounded<TaskOrchestrationWorkItem>();
+        this.orchestrationWorkItemChannel = Channel.CreateUnbounded<WorkflowExecutionWorkItem>();
+        this.activityWorkItemChannel = Channel.CreateUnbounded<ActivityExecutionWorkItem>();
 
         // The actor host is an HTTP service that routes incoming requests to actor instances.
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
@@ -67,19 +75,19 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
 
         builder.Services.AddActors(options =>
         {
-            options.Actors.RegisterActor<DaprWorkflowScheduler>();
+            options.Actors.RegisterActor<WorkflowActor>();
+            options.Actors.RegisterActor<StatelessActivityActor>();
         });
 
         // Register the orchestration service as a dependency so that the actors can invoke methods on it.
-        builder.Services.AddSingleton<IWorkflowScheduler>(this);
+        builder.Services.AddSingleton<IWorkflowExecutor>(this);
+        builder.Services.AddSingleton<IActivityExecutor>(this);
 
         WebApplication app = builder.Build();
         app.UseRouting();
         app.UseEndpoints(endpoints => endpoints.MapActorsHandlers());
         this.daprActorHost = app;
     }
-
-
 
     #region Task Hub Management
     // Nothing to do, since we rely on the existing Dapr actor infrastructure to already be there.
@@ -97,7 +105,7 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         TaskMessage creationMessage,
         OrchestrationStatus[] dedupeStatuses)
     {
-        IOrchestrationActor proxy = this.GetOrchestrationActorProxy(creationMessage.OrchestrationInstance.InstanceId);
+        IWorkflowActor proxy = this.GetOrchestrationActorProxy(creationMessage.OrchestrationInstance.InstanceId);
 
         // Depending on where the actor gets placed, this may invoke an actor on another machine.
         await proxy.InitAsync(creationMessage, dedupeStatuses);
@@ -116,10 +124,10 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         CancellationToken cancellationToken)
     {
         Stopwatch sw = Stopwatch.StartNew();
-        while (sw.Elapsed < timeout)
+
+        do
         {
-            IOrchestrationActor proxy = this.GetOrchestrationActorProxy(instanceId);
-            OrchestrationState? state = await proxy.GetCurrentStateAsync();
+            OrchestrationState? state = await this.GetOrchestrationStateAsync(instanceId, executionId);
             if (state != null && (
                 state.OrchestrationStatus == OrchestrationStatus.Completed ||
                 state.OrchestrationStatus == OrchestrationStatus.Failed ||
@@ -130,13 +138,16 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
 
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
         }
+        while (timeout == Timeout.InfiniteTimeSpan || sw.Elapsed < timeout);
 
         throw new TimeoutException();
     }
 
-    public override Task<OrchestrationState?> GetOrchestrationStateAsync(string instanceId, string? executionId)
+    public override async Task<OrchestrationState?> GetOrchestrationStateAsync(string instanceId, string? executionId)
     {
-        throw new NotImplementedException();
+        IWorkflowActor proxy = this.GetOrchestrationActorProxy(instanceId);
+        OrchestrationState? state = await proxy.GetCurrentStateAsync();
+        return state;
     }
 
     public override Task ForceTerminateTaskOrchestrationAsync(string instanceId, string reason)
@@ -165,7 +176,7 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
 
         // Call back into the actor via a TaskCompletionSource to reschedule the work-item
         workflowWorkItem.TaskCompletionSource.SetResult(new WorkflowExecutionResult(
-            WorkflowExecutionResultType.Abandoned,
+            ExecutionResultType.Abandoned,
             null!,
             Array.Empty<TaskMessage>(),
             Array.Empty<TaskMessage>(),
@@ -176,7 +187,22 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
 
     public override Task CompleteTaskActivityWorkItemAsync(TaskActivityWorkItem workItem, TaskMessage responseMessage)
     {
-        throw new NotImplementedException();
+        ActivityExecutionWorkItem activityExecutionWorkItem = (ActivityExecutionWorkItem)workItem;
+        TaskScheduledEvent scheduledEvent = (TaskScheduledEvent)workItem.TaskMessage.Event;
+
+        ActivityCompletionResponse response = new() { TaskId = scheduledEvent.EventId };
+        if (responseMessage.Event is TaskCompletedEvent completedEvent)
+        {
+            response.SerializedResult = completedEvent.Result;
+        }
+        else
+        {
+            TaskFailedEvent failedEvent = (TaskFailedEvent)responseMessage.Event;
+            response.FailureDetails = failedEvent.FailureDetails;
+        }
+
+        activityExecutionWorkItem.TaskCompletionSource.SetResult(response);
+        return Task.CompletedTask;
     }
 
     public override Task CompleteTaskOrchestrationWorkItemAsync(
@@ -193,7 +219,7 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         // Call back into the actor via a TaskCompletionSource to save the state
         // TODO: orchestratorMessages and continuedAsNewMessage
         workflowWorkItem.TaskCompletionSource.SetResult(new WorkflowExecutionResult(
-            Type: WorkflowExecutionResultType.Executed,
+            Type: ExecutionResultType.Executed,
             UpdatedState: orchestrationState,
             Timers: timerMessages,
             Outbox: outboundMessages,
@@ -202,12 +228,11 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         return Task.CompletedTask;
     }
 
-    public override Task<TaskActivityWorkItem?> LockNextTaskActivityWorkItem(
+    public override async Task<TaskActivityWorkItem?> LockNextTaskActivityWorkItem(
         TimeSpan receiveTimeout,
         CancellationToken cancellationToken)
     {
-        // Not supported yet - just block indefinitely
-        return Task.Delay(Timeout.Infinite, cancellationToken).ContinueWith(_ => default(TaskActivityWorkItem));
+        return await this.activityWorkItemChannel.Reader.ReadAsync(cancellationToken);
     }
 
     public override async Task<TaskOrchestrationWorkItem?> LockNextTaskOrchestrationWorkItemAsync(
@@ -219,12 +244,14 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
 
     public override Task<TaskActivityWorkItem> RenewTaskActivityWorkItemLockAsync(TaskActivityWorkItem workItem)
     {
-        throw new NotImplementedException();
+        // Not used
+        return Task.FromResult(new TaskActivityWorkItem());
     }
 
     public override Task RenewTaskOrchestrationWorkItemLockAsync(TaskOrchestrationWorkItem workItem)
     {
-        throw new NotImplementedException();
+        // Not used
+        return Task.CompletedTask;
     }
 
     // Called by the TaskHubWorker
@@ -237,7 +264,8 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
 
     #region Actor API calls
 
-    Task<WorkflowExecutionResult> IWorkflowScheduler.ExecuteWorkflowAsync(
+    // NOTE: This is just glue code to make the IOrchestrationService's polling abstraction invocable as a method
+    Task<WorkflowExecutionResult> IWorkflowExecutor.ExecuteWorkflowStepAsync(
         string instanceId,
         IList<TaskMessage> inbox,
         IList<HistoryEvent> history)
@@ -254,7 +282,7 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         if (!this.orchestrationWorkItemChannel.Writer.TryWrite(workItem))
         {
             return Task.FromResult(new WorkflowExecutionResult(
-                WorkflowExecutionResultType.Throttled,
+                ExecutionResultType.Throttled,
                 null!,
                 Array.Empty<TaskMessage>(),
                 Array.Empty<TaskMessage>(),
@@ -266,19 +294,57 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowSched
         return workItem.TaskCompletionSource.Task;
     }
 
+    // NOTE: This is just glue code to make the IOrchestrationService's polling abstraction invocable as a method
+    Task<ActivityCompletionResponse> IActivityExecutor.ExecuteActivityAsync(ActivityInvocationRequest request)
+    {
+        ActivityExecutionWorkItem workItem = new()
+        {
+            Id = $"{request.InstanceId}:{request.TaskId:X16}",
+            LockedUntilUtc = DateTime.MaxValue,
+            TaskMessage = new TaskMessage()
+            {
+                OrchestrationInstance = new OrchestrationInstance
+                {
+                    InstanceId = request.InstanceId,
+                    ExecutionId = request.ExecutionId,
+                },
+                Event = new TaskScheduledEvent(request.TaskId)
+                {
+                    Name = request.ActivityName,
+                    Input = request.SerializedInput,
+                },
+            },
+        };
+
+        // IOrchestrationService.LockNextTaskActivityWorkItemAsync is listening for new work-items on this channel.
+        if (!this.activityWorkItemChannel.Writer.TryWrite(workItem))
+        {
+            // TODO
+        }
+
+        // The IOrchestrationService.CompleteTaskActivityWorkItemAsync method
+        // is expected to set the result for this task.
+        return workItem.TaskCompletionSource.Task;
+    }
+
     #endregion
 
-    IOrchestrationActor GetOrchestrationActorProxy(string instanceId, TimeSpan? timeout = null)
+    IWorkflowActor GetOrchestrationActorProxy(string instanceId, TimeSpan? timeout = null)
     {
         // REVIEW: Should we be caching these proxy objects?
-        return ActorProxy.Create<IOrchestrationActor>(
+        return ActorProxy.Create<IWorkflowActor>(
             new ActorId(instanceId),
-            nameof(DaprWorkflowScheduler),
+            nameof(WorkflowActor),
             new ActorProxyOptions { RequestTimeout = timeout });
     }
 
     class WorkflowExecutionWorkItem : TaskOrchestrationWorkItem
     {
         public TaskCompletionSource<WorkflowExecutionResult> TaskCompletionSource { get; } = new();
+    }
+
+    class ActivityExecutionWorkItem : TaskActivityWorkItem
+    {
+        public TaskCompletionSource<ActivityCompletionResponse> TaskCompletionSource { get; } = new();
     }
 }
