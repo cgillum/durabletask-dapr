@@ -124,10 +124,10 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
         CancellationToken cancellationToken)
     {
         Stopwatch sw = Stopwatch.StartNew();
-        while (sw.Elapsed < timeout)
+
+        do
         {
-            IWorkflowActor proxy = this.GetOrchestrationActorProxy(instanceId);
-            OrchestrationState? state = await proxy.GetCurrentStateAsync();
+            OrchestrationState? state = await this.GetOrchestrationStateAsync(instanceId, executionId);
             if (state != null && (
                 state.OrchestrationStatus == OrchestrationStatus.Completed ||
                 state.OrchestrationStatus == OrchestrationStatus.Failed ||
@@ -138,13 +138,16 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
 
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
         }
+        while (timeout == Timeout.InfiniteTimeSpan || sw.Elapsed < timeout);
 
         throw new TimeoutException();
     }
 
-    public override Task<OrchestrationState?> GetOrchestrationStateAsync(string instanceId, string? executionId)
+    public override async Task<OrchestrationState?> GetOrchestrationStateAsync(string instanceId, string? executionId)
     {
-        throw new NotImplementedException();
+        IWorkflowActor proxy = this.GetOrchestrationActorProxy(instanceId);
+        OrchestrationState? state = await proxy.GetCurrentStateAsync();
+        return state;
     }
 
     public override Task ForceTerminateTaskOrchestrationAsync(string instanceId, string reason)
