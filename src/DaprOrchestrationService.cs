@@ -175,6 +175,7 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
             null!,
             Array.Empty<TaskMessage>(),
             Array.Empty<TaskMessage>(),
+            Array.Empty<TaskMessage>(),
             Array.Empty<HistoryEvent>()));
 
         return Task.CompletedTask;
@@ -212,12 +213,13 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
         WorkflowExecutionWorkItem workflowWorkItem = (WorkflowExecutionWorkItem)workItem;
 
         // Call back into the actor via a TaskCompletionSource to save the state
-        // TODO: orchestratorMessages and continuedAsNewMessage
+        // TODO: continuedAsNewMessage (does this still apply?)
         workflowWorkItem.TaskCompletionSource.SetResult(new WorkflowExecutionResult(
             Type: ExecutionResultType.Executed,
             UpdatedState: orchestrationState,
             Timers: timerMessages,
-            Outbox: outboundMessages,
+            ActivityOutbox: outboundMessages,
+            OrchestrationOutbox: orchestratorMessages,
             NewHistoryEvents: newOrchestrationRuntimeState.NewEvents));
 
         return Task.CompletedTask;
@@ -279,6 +281,7 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
             return Task.FromResult(new WorkflowExecutionResult(
                 ExecutionResultType.Throttled,
                 null!,
+                Array.Empty<TaskMessage>(),
                 Array.Empty<TaskMessage>(),
                 Array.Empty<TaskMessage>(),
                 Array.Empty<HistoryEvent>()));

@@ -37,6 +37,13 @@ public interface IWorkflowActor : IActor
     Task CompleteActivityAsync(ActivityCompletionResponse completionInfo);
 
     /// <summary>
+    /// Marks a sub-orchestration execution as completed.
+    /// </summary>
+    /// <param name="message">The message containing the sub-orchestration completion details.</param>
+    /// <returns>A task that completes when the sub-orchestration completion is successfully recorded.</returns>
+    Task CompleteSubOrchestrationAsync(TaskMessage message);
+
+    /// <summary>
     /// Posts a message to the workflow's inbox.
     /// </summary>
     /// <param name="message">The message to post.</param>
