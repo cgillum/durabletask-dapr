@@ -33,13 +33,15 @@ public interface IWorkflowExecutor
 /// <param name="Type">The type of the result - e.g. whether the execution ran, got throttled, aborted, etc.</param>
 /// <param name="UpdatedState">The updated orchestration state associated with the workflow instance.</param>
 /// <param name="Timers">Any scheduled timers.</param>
-/// <param name="Outbox">Any scheduled activity invocation.</param>
+/// <param name="ActivityOutbox">Any scheduled activity invocation.</param>
+/// <param name="OrchestrationOutbox">Any scheduled orchestration messages (sub-orchestrations, events, etc.).</param>
 /// <param name="NewHistoryEvents">The set of history events to append to the workflow orchestration state.</param>
 public record WorkflowExecutionResult(
     ExecutionResultType Type,
     OrchestrationState UpdatedState,
     IList<TaskMessage> Timers,
-    IList<TaskMessage> Outbox,
+    IList<TaskMessage> ActivityOutbox,
+    IList<TaskMessage> OrchestrationOutbox,
     IList<HistoryEvent> NewHistoryEvents);
 
 /// <summary>

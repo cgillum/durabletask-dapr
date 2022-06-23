@@ -126,11 +126,33 @@ class WorkflowActor : ReliableActor, IWorkflowActor
                     result.UpdatedState.OrchestrationStatus == OrchestrationStatus.Terminated)
                 {
                     this.state.CompletedTimeUtc = utcNow;
+
+                    // Notifying parent orchestrations about sub-orchestration completion
+                    IReadOnlyList<TaskMessage> subOrchestrationCompleteRequests = result.OrchestrationOutbox
+                        .Where(msg =>
+                            msg.Event.EventType == EventType.SubOrchestrationInstanceCompleted ||
+                            msg.Event.EventType == EventType.SubOrchestrationInstanceFailed)
+                        .ToList();
+                    if (subOrchestrationCompleteRequests.Count > 0)
+                    {
+                        await subOrchestrationCompleteRequests.ParallelForEachAsync(async message =>
+                        {
+                            // REVIEW: Should we be caching these proxy objects?
+                            IWorkflowActor actor = ActorProxy.Create<IWorkflowActor>(
+                                new ActorId(message.OrchestrationInstance.InstanceId),
+                                nameof(WorkflowActor),
+                                new ActorProxyOptions());
+
+                            await actor.CompleteSubOrchestrationAsync(message);
+                        });
+                    }
                 }
                 else
                 {
+                    List<Task> parallelTasks = new();
+
                     // Schedule reminders for durable timers
-                    await result.Timers.ParallelForEachAsync(item =>
+                    parallelTasks.Add(result.Timers.ParallelForEachAsync(item =>
                     {
                         TimerFiredEvent timer = (TimerFiredEvent)item.Event;
                         lock (this.state.Timers)
@@ -140,10 +162,10 @@ class WorkflowActor : ReliableActor, IWorkflowActor
 
                         TimeSpan reminderDelay = timer.FireAt.Subtract(utcNow).PositiveOrZero();
                         return this.CreateReliableReminder(GetReminderNameForTimer(timer), delay: reminderDelay);
-                    });
+                    }));
 
                     // Process outbox messages
-                    IReadOnlyList<ActivityInvocationRequest> activityRequests = result.Outbox
+                    IReadOnlyList<ActivityInvocationRequest> activityRequests = result.ActivityOutbox
                         .Where(msg => msg.Event.EventType == EventType.TaskScheduled)
                         .Select(msg =>
                         {
@@ -167,14 +189,45 @@ class WorkflowActor : ReliableActor, IWorkflowActor
                         // Each activity invocation gets triggered in parallel by its own stateless actor.
                         // The task ID of the activity is used to uniquely identify the activity for this
                         // particular workflow instance.
-                        await activityRequests.ParallelForEachAsync(request =>
+                        parallelTasks.Add(activityRequests.ParallelForEachAsync(async request =>
                         {
                             IActivityActor activityInvokerProxy = ActorProxy.Create<IActivityActor>(
                                 new ActorId($"{this.state.InstanceId}:activity:{request.TaskId}"),
                                 nameof(StatelessActivityActor),
                                 new ActorProxyOptions());
-                            return activityInvokerProxy.InvokeAsync(request);
-                        });
+                            await activityInvokerProxy.InvokeAsync(request);
+                        }));
+                    }
+
+                    // Creating new sub-orchestration instances
+                    IReadOnlyList<TaskMessage> subOrchestrationCreateRequests = result.OrchestrationOutbox
+                        .Where(msg => msg.Event.EventType == EventType.ExecutionStarted)
+                        .ToList();
+                    if (subOrchestrationCreateRequests.Count > 0)
+                    {
+                        OrchestrationStatus[] dedupeFilter = new[]
+                        {
+                            OrchestrationStatus.Pending,
+                            OrchestrationStatus.Running,
+                        };
+
+                        parallelTasks.Add(subOrchestrationCreateRequests.ParallelForEachAsync(async message =>
+                        {
+                            // REVIEW: Should we be caching these proxy objects?
+                            IWorkflowActor actor = ActorProxy.Create<IWorkflowActor>(
+                                new ActorId(message.OrchestrationInstance.InstanceId),
+                                nameof(WorkflowActor),
+                                new ActorProxyOptions());
+
+                            await actor.InitAsync(message, dedupeFilter);
+                        }));
+                    }
+
+                    // TODO: Sending of external events
+
+                    if (parallelTasks.Count > 0)
+                    {
+                        await Task.WhenAll(parallelTasks);
                     }
                 }
 
@@ -314,6 +367,26 @@ class WorkflowActor : ReliableActor, IWorkflowActor
         // TODO: De-dupe any task completion events that we've already seen
 
         this.state.Inbox.Add(this.state.NewMessage(historyEvent));
+        await this.StateManager.SetStateAsync("state", this.state);
+        await this.StateManager.SaveStateAsync();
+
+        // This reminder will trigger the main workflow loop
+        await this.CreateReliableReminder("task-completed");
+    }
+
+    // This is a callback from another workflow actor when a sub-orchestration completes
+    async Task IWorkflowActor.CompleteSubOrchestrationAsync(TaskMessage message)
+    {
+        await this.TryLoadStateAsync();
+        if (this.state == null)
+        {
+            // The actor may have failed to save its state after being created. The client should have already received
+            // an error message associated with the failure, so we can safely drop this reminder.
+            this.Log.WorkflowStateNotFound(this.Id, "sub-orchestration-callback");
+            return;
+        }
+
+        this.state.Inbox.Add(message);
         await this.StateManager.SetStateAsync("state", this.state);
         await this.StateManager.SaveStateAsync();
 
