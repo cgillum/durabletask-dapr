@@ -1,4 +1,5 @@
 ﻿
+using System.CommandLine;
 using Dapr.Actors;
 using Dapr.Actors.Runtime;
 using DurableTask.Core;
@@ -7,9 +8,25 @@ using Microsoft.Extensions.Logging;
 
 namespace DaprTesting;
 
+enum Test
+{
+    Echo,
+    Sleep,
+    HelloCities,
+}
+
 static class Program
 {
-    static async Task Main(string[] args)
+    static int Main(string[] args)
+    {
+        Option<Test> testOption = new("--test", "The test to run.");
+        RootCommand rootCommand = new("Dapr Workflow POC test driver");
+        rootCommand.AddOption(testOption);
+        rootCommand.SetHandler(RunTest, testOption);
+        return rootCommand.Invoke(args);
+    }
+
+    static async Task<int> RunTest(Test test)
     {
         Console.WriteLine("Starting up...");
 
@@ -29,11 +46,15 @@ static class Program
             // This should be increased if it's necessary to debug interactions with Dapr.
             builder.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
         });
+        DaprOptions options = new() { LoggerFactory = loggerFactory };
 
-        DaprOrchestrationService service = new(new DaprOptions
+        string? reminderIntervalConfig = Environment.GetEnvironmentVariable("DAPR_WORKFLOW_REMINDER_INTERVAL_MINUTES");
+        if (int.TryParse(reminderIntervalConfig, out int reminderIntervalMinutes) && reminderIntervalMinutes > 0)
         {
-            LoggerFactory = loggerFactory,
-        });
+            options.ReliableReminderInterval = TimeSpan.FromMinutes(reminderIntervalMinutes);
+        }
+
+        DaprOrchestrationService service = new(options);
 
         // This is currently a no-op, but we do it anyways since that's the pattern
         // DTFx apps are normally supposed to follow.
@@ -59,20 +80,33 @@ static class Program
         // Need to give time for the actor runtime to finish initializing before we can safely communicate with them.
         Thread.Sleep(TimeSpan.FromSeconds(5));
 
-        Console.WriteLine("Press [ENTER] to create an orchestration instance.");
+        Console.WriteLine($"Press [ENTER] to create a new {test} workflow instance.");
         Console.ReadLine();
 
         TaskHubClient client = new(service, null, loggerFactory);
 
-        ////OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
-        ////    typeof(EchoOrchestration),
-        ////    input: "Hello, Dapr!");
-        ////OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
-        ////    typeof(SleepOrchestration),
-        ////    input: TimeSpan.FromSeconds(10));
-        OrchestrationInstance instance = await client.CreateOrchestrationInstanceAsync(
-            typeof(HelloCitiesOrchestration),
-            input: null);
+        OrchestrationInstance instance;
+        switch (test)
+        {
+            case Test.Echo:
+                instance = await client.CreateOrchestrationInstanceAsync(
+                    typeof(EchoOrchestration),
+                    input: "Hello, Dapr!");
+                break;
+            case Test.Sleep:
+                instance = await client.CreateOrchestrationInstanceAsync(
+                    typeof(SleepOrchestration),
+                    input: TimeSpan.FromSeconds(10));
+                break;
+            case Test.HelloCities:
+                instance = await client.CreateOrchestrationInstanceAsync(
+                    typeof(HelloCitiesOrchestration),
+                    input: null);
+                break;
+            default:
+                Console.Error.WriteLine($"Unknown test type '{test}'.");
+                return -1;
+        }
 
         Console.WriteLine($"Started orchestration with ID = '{instance.InstanceId}' and waiting for it to complete...");
 
@@ -81,6 +115,7 @@ static class Program
 
         Console.WriteLine("Press [ENTER] to exit.");
         Console.ReadLine();
+        return 0;
     }
 }
 

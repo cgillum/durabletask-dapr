@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DurableTask.Dapr;
 
@@ -44,9 +45,9 @@ static class Helpers
         return ParallelForEachAsync(items, maxConcurrency: 4, action);
     }
 
-    public static ILogger CreateLoggerForDaprProvider(this ILoggerFactory factory)
+    public static ILogger CreateLoggerForDaprProvider(this ILoggerFactory? factory)
     {
-        return factory.CreateLogger("DurableTask.Dapr");
+        return factory?.CreateLogger("DurableTask.Dapr") ?? NullLogger.Instance;
     }
 
     public static TimeSpan PositiveOrZero(this TimeSpan timeSpan)

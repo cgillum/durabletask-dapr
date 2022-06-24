@@ -16,10 +16,13 @@ namespace DurableTask.Dapr;
 /// </remarks>
 abstract class ReliableActor : Actor, IRemindable
 {
-    protected ReliableActor(ActorHost host, ILoggerFactory loggerFactory)
+    readonly DaprOptions options;
+
+    protected ReliableActor(ActorHost host, DaprOptions options)
         : base(host)
     {
-        this.Log = loggerFactory.CreateLoggerForDaprProvider();
+        this.Log = options.LoggerFactory.CreateLoggerForDaprProvider();
+        this.options = options;
     }
 
     protected ILogger Log { get; }
@@ -33,26 +36,30 @@ abstract class ReliableActor : Actor, IRemindable
         }
         finally
         {
-            // TODO: Uncomment when this is fixed: https://github.com/dapr/dapr/issues/4801
-            //// await this.UnregisterReminderAsync(reminderName);
+            if (period > TimeSpan.Zero)
+            {
+                this.Log.DeletingReminder(this.Id, reminderName);
+
+                // NOTE: This doesn't actually delete the reminder: https://github.com/dapr/dapr/issues/4801
+                await this.UnregisterReminderAsync(reminderName);
+            }
         }
     }
 
     protected Task CreateReliableReminder(string reminderName, byte[]? state = null, TimeSpan? delay = null)
     {
-        // 5 minutes represents the amount of time to wait to redeliver a reminder the process crashes
-        // before the operation is able to succeed.
-        // TODO: Make this configurable
-        ////TimeSpan defaultRecurrence = TimeSpan.FromMinutes(5);
-
-        // TODO: Workaround for https://github.com/dapr/dapr/issues/4801
-        TimeSpan defaultRecurrence = TimeSpan.FromMilliseconds(-1);
+        TimeSpan recurrence = this.options.ReliableReminderInterval;
+        if (recurrence <= TimeSpan.Zero)
+        {
+            // Disable recurrence
+            recurrence = TimeSpan.FromMilliseconds(-1);
+        }
 
         // The default behavior is to execute immediately
         delay ??= TimeSpan.Zero;
 
-        this.Log.CreatingReminder(this.Id, reminderName, delay.Value, defaultRecurrence);
-        return this.RegisterReminderAsync(reminderName, state, delay.Value, defaultRecurrence);
+        this.Log.CreatingReminder(this.Id, reminderName, delay.Value, recurrence);
+        return this.RegisterReminderAsync(reminderName, state, delay.Value, recurrence);
     }
 
     protected abstract Task OnReminderReceivedAsync(string reminderName, byte[] state);
