@@ -7,7 +7,6 @@ using Dapr.Actors.Client;
 using Dapr.Actors.Runtime;
 using DurableTask.Core;
 using DurableTask.Dapr.Workflows;
-using Microsoft.Extensions.Logging;
 
 namespace DurableTask.Dapr.Activities;
 
@@ -18,8 +17,8 @@ class StatelessActivityActor : ReliableActor, IActivityActor
 {
     readonly IActivityExecutor activityInvoker;
 
-    public StatelessActivityActor(ActorHost host, ILoggerFactory loggerFactory, IActivityExecutor activityInvoker)
-        : base(host, loggerFactory)
+    public StatelessActivityActor(ActorHost host, DaprOptions options, IActivityExecutor activityInvoker)
+        : base(host, options)
     {
         this.activityInvoker = activityInvoker ?? throw new ArgumentNullException(nameof(activityInvoker));
     }

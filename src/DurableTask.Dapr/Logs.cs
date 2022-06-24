@@ -102,4 +102,13 @@ static partial class Logs
         this ILogger logger,
         ActorId actorId,
         string details);
+
+    [LoggerMessage(
+        EventId = 11,
+        Level = LogLevel.Information,
+        Message = "{actorId}: Deleting reminder '{reminderName}'.")]
+    public static partial void DeletingReminder(
+        this ILogger logger,
+        ActorId actorId,
+        string reminderName);
 }
