@@ -13,7 +13,6 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace DurableTask.Dapr;
 
@@ -254,7 +253,13 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
     }
 
     // Called by the TaskHubWorker
-    public override Task StartAsync() => this.daprActorHost.StartAsync();
+    public override async Task StartAsync()
+    {
+        await this.daprActorHost.StartAsync();
+
+        // Dapr requires several seconds for actor discovery to happen
+        await Task.Delay(TimeSpan.FromSeconds(5));
+    }
 
     // Called by the TaskHubWorker
     public override Task StopAsync() => this.daprActorHost.StopAsync();
