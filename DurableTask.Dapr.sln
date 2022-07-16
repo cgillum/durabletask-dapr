@@ -6,6 +6,8 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{5D8C7CC1-3734-460E-B19F-234D9FE8B8AE}"
 	ProjectSection(SolutionItems) = preProject
 		.editorconfig = .editorconfig
+		nuget.config = nuget.config
+		README.md = README.md
 	EndProjectSection
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "DurableTask.Dapr", "src\DurableTask.Dapr\DurableTask.Dapr.csproj", "{0CC77842-4679-413A-8151-1611885F7504}"
@@ -40,6 +42,11 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "components", "components", 
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "payments-service", "payments-service", "{2FADA62F-F8A2-4EA1-B35A-CB8A570A6062}"
+	ProjectSection(SolutionItems) = preProject
+		samples\order-processing-service\payments-service\app.ts = samples\order-processing-service\payments-service\app.ts
+		samples\order-processing-service\payments-service\package.json = samples\order-processing-service\payments-service\package.json
+		samples\order-processing-service\payments-service\README.md = samples\order-processing-service\payments-service\README.md
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

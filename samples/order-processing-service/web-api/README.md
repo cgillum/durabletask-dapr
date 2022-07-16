@@ -5,12 +5,6 @@
 
 ## Building and running
 
-This project depends on some unreleased nuget packages. In order to build, you'll need to add the following myget.org package source.
-
-```bash
-dotnet nuget add source https://www.myget.org/F/azure-appservice/api/v3/index.json --name appservice-myget 
-```
-
 Use the following commands to build the project.
 
 ```bash
