@@ -5,6 +5,7 @@ using System.Text.Json;
 using Dapr.Actors;
 using Dapr.Actors.Client;
 using Dapr.Actors.Runtime;
+using Dapr.Client;
 using DurableTask.Core;
 using DurableTask.Dapr.Workflows;
 
@@ -15,11 +16,17 @@ namespace DurableTask.Dapr.Activities;
 /// </summary>
 class StatelessActivityActor : ReliableActor, IActivityActor
 {
+    readonly DaprClient daprClient;
     readonly IActivityExecutor activityInvoker;
 
-    public StatelessActivityActor(ActorHost host, DaprOptions options, IActivityExecutor activityInvoker)
+    public StatelessActivityActor(
+        ActorHost host,
+        DaprOptions options,
+        DaprClient daprClient,
+        IActivityExecutor activityInvoker)
         : base(host, options)
     {
+        this.daprClient = daprClient ?? throw new ArgumentNullException(nameof(daprClient));
         this.activityInvoker = activityInvoker ?? throw new ArgumentNullException(nameof(activityInvoker));
     }
 

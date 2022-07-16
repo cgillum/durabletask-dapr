@@ -9,7 +9,7 @@ The `/test/DaprTesting` directory includes a console app that runs a Durable Tas
 However, before the test can run, you need to start the Dapr sidecar. The best way to set this up is using the Dapr CLI (see the [Dapr getting started guide](https://docs.dapr.io/getting-started/)). Below is the command-line you can use to start the sidecar.
 
 ```bash
-dapr run --app-id myapp2 --dapr-http-port 3500 --app-port 5000
+dapr run --app-id myapp2 --dapr-http-port 3500 --app-port 5000 --dapr-grpc-port 50001
 ```
 
 The output should look something like the following:
