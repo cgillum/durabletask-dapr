@@ -73,10 +73,23 @@ public class DaprOrchestrationService : OrchestrationServiceBase, IWorkflowExecu
             builder.Services.AddSingleton<ILoggerFactory>(options.LoggerFactory);
         }
 
-        builder.Services.AddActors(options =>
+        builder.Services.AddDaprClient(clientOptions =>
         {
-            options.Actors.RegisterActor<WorkflowActor>();
-            options.Actors.RegisterActor<StatelessActivityActor>();
+            if (!string.IsNullOrEmpty(options.GrpcEndpoint))
+            {
+                clientOptions.UseGrpcEndpoint(options.GrpcEndpoint);
+            }
+        });
+
+        builder.Services.AddActors(actorOptions =>
+        {
+            actorOptions.Actors.RegisterActor<WorkflowActor>();
+            actorOptions.Actors.RegisterActor<StatelessActivityActor>();
+
+            // The Durable Task Framework history events are not compatible with System.Text.Json so we need to create
+            // a custom converter for these.
+            actorOptions.JsonSerializerOptions.Converters.Add(new DurableTaskHistoryConverter());
+            actorOptions.JsonSerializerOptions.Converters.Add(new DurableTaskTimerFiredConverter());
         });
 
         // Register the orchestration service as a dependency so that the actors can invoke methods on it.

@@ -2,26 +2,37 @@
 // Licensed under the MIT License.
 
 using System.Collections.ObjectModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Serialization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dapr.Actors;
 using Dapr.Actors.Client;
 using Dapr.Actors.Runtime;
+using Dapr.Client;
 using DurableTask.Core;
 using DurableTask.Core.History;
 using DurableTask.Dapr.Activities;
+using Microsoft.Extensions.Logging;
 
 namespace DurableTask.Dapr.Workflows;
 
 class WorkflowActor : ReliableActor, IWorkflowActor
 {
+    readonly DaprClient daprClient;
     readonly IWorkflowExecutor workflowScheduler;
 
     WorkflowState? state;
 
-    public WorkflowActor(ActorHost host, DaprOptions options, IWorkflowExecutor workflowScheduler)
+    public WorkflowActor(
+        ActorHost host,
+        DaprOptions options,
+        DaprClient daprClient,
+        IWorkflowExecutor workflowScheduler)
         : base(host, options)
     {
         this.workflowScheduler = workflowScheduler ?? throw new ArgumentNullException(nameof(workflowScheduler));
+        this.daprClient = daprClient ?? throw new ArgumentNullException(nameof(daprClient));
     }
 
     async Task IWorkflowActor.InitAsync(TaskMessage creationMessage, OrchestrationStatus[] dedupeStatuses)
@@ -110,6 +121,8 @@ class WorkflowActor : ReliableActor, IWorkflowActor
             this.state.Inbox,
             this.state.History);
 
+        List<Task> parallelTasks = new();
+
         switch (result.Type)
         {
             case ExecutionResultType.Executed:
@@ -148,9 +161,8 @@ class WorkflowActor : ReliableActor, IWorkflowActor
                 }
                 else
                 {
-                    List<Task> parallelTasks = new();
-
-                    // Schedule reminders for durable timers
+                    // Schedule reminders for durable timers.
+                    // It only makes sense to schedule timers when the orchestration has *not* completed.
                     parallelTasks.Add(result.Timers.ParallelForEachAsync(item =>
                     {
                         TimerFiredEvent timer = (TimerFiredEvent)item.Event;
@@ -162,72 +174,99 @@ class WorkflowActor : ReliableActor, IWorkflowActor
                         TimeSpan reminderDelay = timer.FireAt.Subtract(utcNow).PositiveOrZero();
                         return this.CreateReliableReminder(GetReminderNameForTimer(timer), delay: reminderDelay);
                     }));
+                }
 
-                    // Process outbox messages
-                    IReadOnlyList<ActivityInvocationRequest> activityRequests = result.ActivityOutbox
-                        .Where(msg => msg.Event.EventType == EventType.TaskScheduled)
-                        .Select(msg =>
-                        {
-                            TaskScheduledEvent taskEvent = (TaskScheduledEvent)msg.Event;
-                            return new ActivityInvocationRequest(
-                                taskEvent.Name!,
-                                taskEvent.EventId,
-                                taskEvent.Input,
-                                msg.OrchestrationInstance.InstanceId,
-                                msg.OrchestrationInstance.ExecutionId);
-                        })
-                        .ToList();
-
-                    if (activityRequests.Count > 0)
+                // Process outbox messages
+                IReadOnlyList<ActivityInvocationRequest> activityRequests = result.ActivityOutbox
+                    .Where(msg => msg.Event.EventType == EventType.TaskScheduled)
+                    .Select(msg =>
                     {
-                        this.Log.SchedulingActivityTasks(
-                            this.state.InstanceId,
-                            activityRequests.Count,
-                            string.Join(", ", activityRequests));
+                        TaskScheduledEvent taskEvent = (TaskScheduledEvent)msg.Event;
+                        return new ActivityInvocationRequest(
+                            taskEvent.Name!,
+                            taskEvent.EventId,
+                            taskEvent.Input,
+                            msg.OrchestrationInstance.InstanceId,
+                            msg.OrchestrationInstance.ExecutionId);
+                    })
+                    .ToList();
 
-                        // Each activity invocation gets triggered in parallel by its own stateless actor.
-                        // The task ID of the activity is used to uniquely identify the activity for this
-                        // particular workflow instance.
-                        parallelTasks.Add(activityRequests.ParallelForEachAsync(async request =>
-                        {
-                            IActivityActor activityInvokerProxy = ActorProxy.Create<IActivityActor>(
-                                new ActorId($"{this.state.InstanceId}:activity:{request.TaskId}"),
-                                nameof(StatelessActivityActor),
-                                new ActorProxyOptions());
-                            await activityInvokerProxy.InvokeAsync(request);
-                        }));
+                if (activityRequests.Count > 0)
+                {
+                    this.Log.SchedulingActivityTasks(
+                        this.state.InstanceId,
+                        activityRequests.Count,
+                        string.Join(", ", activityRequests));
+
+                    // Each activity invocation gets triggered in parallel by its own stateless actor.
+                    // The task ID of the activity is used to uniquely identify the activity for this
+                    // particular workflow instance.
+                    parallelTasks.Add(activityRequests.ParallelForEachAsync(async request =>
+                    {
+                        IActivityActor activityInvokerProxy = ActorProxy.Create<IActivityActor>(
+                            new ActorId($"{this.state.InstanceId}:activity:{request.TaskId}"),
+                            nameof(StatelessActivityActor),
+                            new ActorProxyOptions());
+                        await activityInvokerProxy.InvokeAsync(request);
+                    }));
+                }
+
+                List<TaskMessage> subOrchestrationCreateRequests = new();
+                List<PubSubEvent> pubSubEvents = new();
+
+                foreach (TaskMessage message in result.OrchestrationOutbox)
+                {
+                    if (message.Event.EventType == EventType.ExecutionStarted)
+                    {
+                        subOrchestrationCreateRequests.Add(message);
                     }
-
-                    // Creating new sub-orchestration instances
-                    IReadOnlyList<TaskMessage> subOrchestrationCreateRequests = result.OrchestrationOutbox
-                        .Where(msg => msg.Event.EventType == EventType.ExecutionStarted)
-                        .ToList();
-                    if (subOrchestrationCreateRequests.Count > 0)
+                    else if (PubSubEvent.TryParse(message, out PubSubEvent? pubSubEvent))
                     {
-                        OrchestrationStatus[] dedupeFilter = new[]
-                        {
+                        pubSubEvents.Add(pubSubEvent);
+                    }
+                    else
+                    {
+                        this.Log.LogWarning(
+                            "Don't know how to handle {eventType} for orchestrator outputs",
+                            message.Event.EventType);
+                    }
+                }
+
+                // Creating new sub-orchestration instances
+                if (subOrchestrationCreateRequests.Count > 0)
+                {
+                    OrchestrationStatus[] dedupeFilter = new[]
+                    {
                             OrchestrationStatus.Pending,
                             OrchestrationStatus.Running,
                         };
 
-                        parallelTasks.Add(subOrchestrationCreateRequests.ParallelForEachAsync(async message =>
-                        {
-                            // REVIEW: Should we be caching these proxy objects?
-                            IWorkflowActor actor = ActorProxy.Create<IWorkflowActor>(
-                                new ActorId(message.OrchestrationInstance.InstanceId),
-                                nameof(WorkflowActor),
-                                new ActorProxyOptions());
-
-                            await actor.InitAsync(message, dedupeFilter);
-                        }));
-                    }
-
-                    // TODO: Sending of external events
-
-                    if (parallelTasks.Count > 0)
+                    parallelTasks.Add(subOrchestrationCreateRequests.ParallelForEachAsync(async message =>
                     {
-                        await Task.WhenAll(parallelTasks);
-                    }
+                            // REVIEW: Should we be caching these proxy objects?
+                        IWorkflowActor actor = ActorProxy.Create<IWorkflowActor>(
+                            new ActorId(message.OrchestrationInstance.InstanceId),
+                            nameof(WorkflowActor),
+                            new ActorProxyOptions());
+
+                        await actor.InitAsync(message, dedupeFilter);
+                    }));
+                }
+
+                if (pubSubEvents.Count > 0)
+                {
+                    parallelTasks.Add(pubSubEvents.ParallelForEachAsync(async pubSubEvent =>
+                    {
+                        await this.daprClient.PublishEventAsync(
+                            pubSubEvent.PubSubName,
+                            pubSubEvent.Topic,
+                            pubSubEvent.Payload);
+                    }));
+                }
+
+                if (parallelTasks.Count > 0)
+                {
+                    await Task.WhenAll(parallelTasks);
                 }
 
                 // At this point, the inbox should be fully processed.
@@ -370,7 +409,7 @@ class WorkflowActor : ReliableActor, IWorkflowActor
         await this.StateManager.SaveStateAsync();
 
         // This reminder will trigger the main workflow loop
-        await this.CreateReliableReminder("task-completed");
+        await this.CreateReliableReminder($"task-completed-{completionInfo.TaskId}");
     }
 
     // This is a callback from another workflow actor when a sub-orchestration completes
@@ -408,6 +447,23 @@ class WorkflowActor : ReliableActor, IWorkflowActor
         }
     }
 
+    record PubSubEvent(string PubSubName, string Topic, object Payload)
+    {
+        public static bool TryParse(TaskMessage msg, [NotNullWhen(true)] out PubSubEvent? pubSubEvent)
+        {
+            if (msg.Event is EventSentEvent sendEvent &&
+                Uri.TryCreate(sendEvent.InstanceId, UriKind.Absolute, out Uri? destination) &&
+                string.Equals(destination.Scheme, "dapr.pubsub", StringComparison.OrdinalIgnoreCase))
+            {
+                pubSubEvent = new PubSubEvent(PubSubName: destination.Host, Topic: sendEvent.Name, sendEvent.Input);
+                return true;
+            }
+
+            pubSubEvent = null;
+            return false;
+        }
+    }
+
     class WorkflowState
     {
         public OrchestrationStatus OrchestrationStatus { get; set; }
@@ -424,9 +480,9 @@ class WorkflowActor : ReliableActor, IWorkflowActor
         public DateTime LastUpdatedTimeUtc { get; set; }
         [DataMember(EmitDefaultValue = false)]
         public DateTime? CompletedTimeUtc { get; set; }
-        public List<TaskMessage> Inbox { get; } = new List<TaskMessage>();
-        public TimerCollection Timers { get; } = new();
-        public List<HistoryEvent> History { get; } = new List<HistoryEvent>();
+        public List<TaskMessage> Inbox { get; init; } = new List<TaskMessage>();
+        public TimerCollection Timers { get; init; } = new();
+        public List<HistoryEvent> History { get; init; } = new List<HistoryEvent>();
         public int SequenceNumber { get; set; }
 
         internal TaskMessage NewMessage(HistoryEvent e)
@@ -443,3 +499,69 @@ class WorkflowActor : ReliableActor, IWorkflowActor
         }
     }
 }
+
+// TODO: Move this into its own file
+class DurableTaskHistoryConverter : JsonConverter<HistoryEvent>
+{
+    public override HistoryEvent? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using JsonDocument document = JsonDocument.ParseValue(ref reader);
+
+        JsonElement eventTypeJson;
+        if (!document.RootElement.TryGetProperty("eventType", out eventTypeJson) &&
+            !document.RootElement.TryGetProperty("EventType", out eventTypeJson))
+        {
+            throw new JsonException($"Couldn't find an 'EventType' or 'eventType' property for a history event!");
+        }
+
+        EventType eventType = (EventType)eventTypeJson.GetInt32();
+        Type targetType = eventType switch
+        {
+            EventType.ExecutionStarted => typeof(ExecutionStartedEvent),
+            EventType.ExecutionCompleted => typeof(ExecutionCompletedEvent),
+            EventType.ExecutionFailed => typeof(ExecutionCompletedEvent),
+            EventType.ExecutionTerminated => typeof(ExecutionTerminatedEvent),
+            EventType.TaskScheduled => typeof(TaskScheduledEvent),
+            EventType.TaskCompleted => typeof(TaskCompletedEvent),
+            EventType.TaskFailed => typeof(TaskFailedEvent),
+            EventType.SubOrchestrationInstanceCreated => typeof(SubOrchestrationInstanceCreatedEvent),
+            EventType.SubOrchestrationInstanceCompleted => typeof(SubOrchestrationInstanceCompletedEvent),
+            EventType.SubOrchestrationInstanceFailed => typeof(SubOrchestrationInstanceFailedEvent),
+            EventType.TimerCreated => typeof(TimerCreatedEvent),
+            EventType.TimerFired => typeof(TimerFiredEvent),
+            EventType.OrchestratorStarted => typeof(OrchestratorStartedEvent),
+            EventType.OrchestratorCompleted => typeof(OrchestratorCompletedEvent),
+            EventType.EventSent => typeof(EventSentEvent),
+            EventType.EventRaised => typeof(EventRaisedEvent),
+            EventType.ContinueAsNew => typeof(ContinueAsNewEvent),
+            EventType.GenericEvent => typeof(GenericEvent),
+            EventType.HistoryState => typeof(HistoryStateEvent),
+            _ => throw new NotSupportedException(),
+        };
+
+        string json = document.RootElement.ToString();
+        return (HistoryEvent)Newtonsoft.Json.JsonConvert.DeserializeObject(json, targetType);
+    }
+
+    public override void Write(Utf8JsonWriter writer, HistoryEvent value, JsonSerializerOptions options)
+    {
+        string rawJson = Newtonsoft.Json.JsonConvert.SerializeObject(value, Newtonsoft.Json.Formatting.None);
+        writer.WriteRawValue(rawJson);
+    }
+}
+
+class DurableTaskTimerFiredConverter : JsonConverter<TimerFiredEvent>
+{
+    readonly DurableTaskHistoryConverter innerConverter = new();
+
+    public override TimerFiredEvent? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        return (TimerFiredEvent?)this.innerConverter.Read(ref reader, typeToConvert, options);
+    }
+
+    public override void Write(Utf8JsonWriter writer, TimerFiredEvent value, JsonSerializerOptions options)
+    {
+        this.innerConverter.Write(writer, value, options);
+    }
+}
+

@@ -2,10 +2,9 @@
   "name": "notification-service",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
     "start": "ts-node app.ts",
-    "start:dapr": "dapr run --app-id notifications --app-protocol http --dapr-http-port 3501 --app-port 5001 --components-path ./components -- ts-node app.ts"
+    "start:dapr": "dapr run --app-id notifications --app-protocol http --dapr-http-port 3502 --app-port 5002 --components-path ../components -- ts-node app.ts"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +13,7 @@
     "typescript": "^4.7.4"
   },
   "dependencies": {
-    "dapr-client": "^2.3.0"
+    "dapr-client": "^2.3.0",
+    "express": "^4.17.2"
   }
 }

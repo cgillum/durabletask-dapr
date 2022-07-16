@@ -28,7 +28,7 @@ public static class WorkflowServiceCollectionExtensions
         }
 
         serviceCollection.AddSingleton<WorkflowRuntimeOptions>();
-
+        serviceCollection.AddDaprClient();
         serviceCollection.AddSingleton(services => new WorkflowClient(services));
 
         serviceCollection.AddHostedService(services =>
@@ -37,7 +37,18 @@ public static class WorkflowServiceCollectionExtensions
 
             WorkflowRuntimeOptions options = services.GetRequiredService<WorkflowRuntimeOptions>();
             configure?.Invoke(options);
-            workerBuilder.AddTasks(registry => options.AddWorkflowsToRegistry(registry));
+
+            workerBuilder.UseServices(services);
+
+            workerBuilder.AddTasks(registry =>
+            {
+                options.AddWorkflowsToRegistry(registry);
+
+                // Built-in method for doing service invocation
+                registry.AddActivity<InvokeServiceMethodActivity>();
+
+                // TODO: Built-in activity for invoking output bindings
+            });
 
             DurableTaskGrpcWorker worker = workerBuilder.Build();
             return worker;

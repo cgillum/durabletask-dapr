@@ -1,0 +1,26 @@
+### Create new order (no approval required)
+POST http://localhost:8080/orders
+Content-Type: application/json
+
+{ "name": "catfood", "quantity": 3, "totalCost": 19.99 }
+
+
+### Create new order (approval required)
+POST http://localhost:8080/orders
+Content-Type: application/json
+
+{ "name": "iphone", "quantity": 1, "totalCost": 1199.99 }
+
+
+### Create new order (durability test)
+POST http://localhost:8080/orders
+Content-Type: application/json
+
+{ "name": "tacos", "quantity": 3, "totalCost": 4.99 }
+
+
+### Existing workflow - Tesla order
+GET http://localhost:8080/orders/9cbf66c4
+
+### Existing workflow - BMW order
+GET http://localhost:8080/orders/f6142363

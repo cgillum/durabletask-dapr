@@ -14,5 +14,7 @@ public class WorkflowMetadata
 
     public bool Exists => this.Details != null;
 
+    public bool IsWorkflowRunning => this.Details?.RuntimeStatus == OrchestrationRuntimeStatus.Running; 
+
     public OrchestrationMetadata? Details { get; }
 }

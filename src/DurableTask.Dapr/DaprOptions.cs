@@ -22,10 +22,18 @@ public class DaprOptions
     public ILoggerFactory LoggerFactory { get; init; }
 
     /// <summary>
-    /// The interval time for reminders that are created specifically for reliability.
+    /// The interval time for reminders that are created specifically for reliability. The default value is 5 minutes.
     /// </summary>
     /// <remarks>
     /// A value of <see cref="TimeSpan.Zero"/> or less will disable reminder intervals.
     /// </remarks>
-    public TimeSpan ReliableReminderInterval { get; set; }
+    public TimeSpan ReliableReminderInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The gRPC endpoint to use when communicating with the Dapr sidecar over gRPC.
+    /// </summary>
+    /// <remarks>
+    /// This value is typically in the form <c>"http://127.0.0.1:%DAPR_GRPC_PORT%"</c>.
+    /// </remarks>
+    public string? GrpcEndpoint { get; set; }
 }

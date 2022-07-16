@@ -6,6 +6,8 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{5D8C7CC1-3734-460E-B19F-234D9FE8B8AE}"
 	ProjectSection(SolutionItems) = preProject
 		.editorconfig = .editorconfig
+		nuget.config = nuget.config
+		README.md = README.md
 	EndProjectSection
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "DurableTask.Dapr", "src\DurableTask.Dapr\DurableTask.Dapr.csproj", "{0CC77842-4679-413A-8151-1611885F7504}"
@@ -13,13 +15,11 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "samples", "samples", "{1019D639-F84B-4218-BA87-5F0EFCA783F8}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "order-processing-service", "order-processing-service", "{285E7F62-224D-4D70-AB9B-CFCA615AC5CA}"
-	ProjectSection(SolutionItems) = preProject
-		samples\order-processing-service\notification-service\components\pubsub.yaml = samples\order-processing-service\notification-service\components\pubsub.yaml
-	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "notification-service", "notification-service", "{C6D345B2-DE6A-42AF-A5CC-E0EE35275305}"
 	ProjectSection(SolutionItems) = preProject
 		samples\order-processing-service\notification-service\app.ts = samples\order-processing-service\notification-service\app.ts
+		samples\order-processing-service\notification-service\index.js = samples\order-processing-service\notification-service\index.js
 		samples\order-processing-service\notification-service\package.json = samples\order-processing-service\notification-service\package.json
 	EndProjectSection
 EndProject
@@ -33,7 +33,20 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "web-api", "web-api", "{76E9
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OrderingWebApi", "samples\order-processing-service\web-api\OrderingWebApi.csproj", "{644F7359-4C18-4193-8AA2-BB6BDED6BF95}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dapr.Workflow", "src\Dapr.Workflow\Dapr.Workflow.csproj", "{E293AE6D-1C1A-4E3C-8CD6-0BD0C8A798D8}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Dapr.Workflow", "src\Dapr.Workflow\Dapr.Workflow.csproj", "{E293AE6D-1C1A-4E3C-8CD6-0BD0C8A798D8}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "components", "components", "{88AC5DA7-EBD1-47EF-A70E-9302FC3FCEB5}"
+	ProjectSection(SolutionItems) = preProject
+		samples\order-processing-service\components\pubsub.yaml = samples\order-processing-service\components\pubsub.yaml
+		samples\order-processing-service\components\statestore.yaml = samples\order-processing-service\components\statestore.yaml
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "payments-service", "payments-service", "{2FADA62F-F8A2-4EA1-B35A-CB8A570A6062}"
+	ProjectSection(SolutionItems) = preProject
+		samples\order-processing-service\payments-service\app.ts = samples\order-processing-service\payments-service\app.ts
+		samples\order-processing-service\payments-service\package.json = samples\order-processing-service\payments-service\package.json
+		samples\order-processing-service\payments-service\README.md = samples\order-processing-service\payments-service\README.md
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -72,6 +85,8 @@ Global
 		{091F3C29-856E-4E2F-9E4A-59EBC6965C86} = {48A0D675-C294-4D76-BA3B-BD89961EAF8B}
 		{76E9C700-415B-47EA-B665-1EB110B551EE} = {285E7F62-224D-4D70-AB9B-CFCA615AC5CA}
 		{644F7359-4C18-4193-8AA2-BB6BDED6BF95} = {76E9C700-415B-47EA-B665-1EB110B551EE}
+		{88AC5DA7-EBD1-47EF-A70E-9302FC3FCEB5} = {285E7F62-224D-4D70-AB9B-CFCA615AC5CA}
+		{2FADA62F-F8A2-4EA1-B35A-CB8A570A6062} = {285E7F62-224D-4D70-AB9B-CFCA615AC5CA}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {C48C815F-B07A-4E95-9BE9-192DB216D52C}

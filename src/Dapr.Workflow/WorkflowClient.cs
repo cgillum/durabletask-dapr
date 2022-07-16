@@ -8,6 +8,10 @@ namespace Dapr.Workflow;
 
 public sealed class WorkflowClient : IAsyncDisposable
 {
+    // IMPORTANT: This client is only designed to work with the built-in engine.
+    //            The implementation will need to be updated to use the Dapr
+    //            workflow building block APIs instead so that it can be used
+    //            with alternate workflow components.
     readonly DurableTaskClient innerClient;
 
     internal WorkflowClient(IServiceProvider? services = null)
