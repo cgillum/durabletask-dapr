@@ -1,7 +1,7 @@
 import { DaprServer, CommunicationProtocolEnum } from 'dapr-client';
 
 const DAPR_HOST = process.env.DAPR_HOST || "http://localhost";
-const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3501";
+const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3502";
 const SERVER_HOST = process.env.SERVER_HOST || "127.0.0.1";
 const SERVER_PORT = process.env.SERVER_PORT || "5002";
 const PUBSUB_NAME = process.env.PUBSUB_NAME || "notifications-pubsub";

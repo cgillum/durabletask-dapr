@@ -4,6 +4,9 @@ Content-Type: application/json
 
 { "name": "catfood", "quantity": 3, "totalCost": 19.99 }
 
+### Query placeholder
+GET http://localhost:8080/orders/XXX
+
 
 ### Create new order (approval required)
 POST http://localhost:8080/orders
@@ -11,6 +14,8 @@ Content-Type: application/json
 
 { "name": "iphone", "quantity": 1, "totalCost": 1199.99 }
 
+### Approve placeholder
+POST http://localhost:8080/orders/XXX/approve
 
 ### Create new order (durability test)
 POST http://localhost:8080/orders

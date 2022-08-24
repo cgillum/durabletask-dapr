@@ -25,7 +25,7 @@ that the gRPC endpoint is on port 50001.
 The code in the web-api project will connect to this sidecar on port 4001.
 
 ```bash
-docker run --name durabletask-sidecar-dapr -p 4001:4001 -d cgillum/durabletask-sidecar:0.3.2-dapr --backend Dapr
+docker run --name durabletask-sidecar-dapr -p 4001:4001 -d cgillum/durabletask-sidecar:0.3.3-dapr --backend Dapr
 ```
 
 ## Dapr CLI
@@ -36,10 +36,16 @@ This starts the Dapr sidecar in standalone mode. It does *not* attempt to start 
 dapr run --app-id web-api --app-port 5000 --dapr-http-port 3500 --dapr-grpc-port 50001 --components-path ../components
 ```
 
+If you want to run the Dapr sidecar together with the app, run the following command instead:
+
+```bash
+dapr run --app-id web-api --app-port 5000 --dapr-http-port 3500 --dapr-grpc-port 50001 --components-path ../components -- dotnet run
+```
+
 ## Examples
 
 See the [demo.http](../demo.http) file for several examples of starting workflow by invoking the HTTP APIs.
-It works best if used with the [REST Client](https://marketplace.visualstudio.com/items?itemName=humao.rest-client) VS Code extention.
+It works best if used with the [REST Client](https://marketplace.visualstudio.com/items?itemName=humao.rest-client) VS Code extension.
 
 For example, a purchase order workflow can be started with the following HTTP request:
 

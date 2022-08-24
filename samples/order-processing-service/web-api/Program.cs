@@ -13,7 +13,7 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 builder.Services.AddWorkflow(options =>
 {
     // Inline order processing workflow logic
-    options.RegisterWorkflow<OrderPayload, OrderResult>("ProcessOrder", async (context, input) =>
+    options.RegisterWorkflow<OrderPayload, OrderResult>("ProcessOrder", implementation: async (context, input) =>
     {
         ArgumentNullException.ThrowIfNull(input, nameof(input));
 
