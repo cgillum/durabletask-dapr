@@ -33,6 +33,11 @@ public class WorkflowContext
         return this.innerContext.WaitForExternalEvent<object>(eventName, timeout);
     }
 
+    public Task<T> WaitForExternalEventAsync<T>(string eventName, TimeSpan timeout)
+    {
+        return this.innerContext.WaitForExternalEvent<T>(eventName, timeout);
+    }
+
     public void PublishEvent(string pubSubName, string topic, object payload)
     {
         string pubSubId = $"dapr.pubsub://{pubSubName}";
